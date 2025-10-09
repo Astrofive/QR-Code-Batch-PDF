@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>QR Code PDF Generator</title>
+
+  <!-- Libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" crossorigin="anonymous"></script>
+
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;background:linear-gradient(to bottom right,#0f172e,#1e293b);min-height:100vh;padding:32px;color:#e5e7eb}
+    .container{max-width:1400px;margin:0 auto}
+    h1{font-size:32px;font-weight:800;margin-bottom:24px}
+    .grid{display:grid;grid-template-columns:1fr 2fr;gap:24px}
+    @media (max-width:1024px){.grid{grid-template-columns:1fr}}
+    .panel{background:#475569;border-radius:10px;padding:18px}
+    .panel h2{font-size:18px;font-weight:700;margin-bottom:10px}
+    .upload-label{display:flex;align-items:center;justify-content:center;width:100%;padding:14px;background:#334155;border:2px dashed #64748b;border-radius:10px;cursor:pointer;gap:8px;transition:.2s}
+    .upload-label:hover{background:#3b4759;border-color:#cbd5e1}
+    .upload-label input{display:none}
+    .success-text{margin-top:8px;font-size:14px;color:#86efac}
+    .space-y-6{display:flex;flex-direction:column;gap:18px}
+    .btn{width:100%;background:#16a34a;color:#fff;border:none;padding:14px;border-radius:10px;font-size:16px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s}
+    .btn:disabled{background:#475569;opacity:.6;cursor:not-allowed}
+    .btn:hover:not(:disabled){background:#15803d}
+    .canvas-container{background:#1e293b;border-radius:10px;padding:18px;height:100%;display:flex;flex-direction:column}
+    #stage{position:relative;flex:1;background:#0f172e;border:2px solid #475569;border-radius:10px;overflow:hidden;user-select:none}
+    #stage img{display:block;max-width:100%;max-height:100%}
+    .empty{height:100%;display:grid;place-items:center;color:#9ca3af}
+    .qr-box{position:absolute;border:2px solid #60a5fa;background:rgba(96,165,250,.12);cursor:move;transition:.05s}
+    .qr-box.selected{border-color:#4ade80;background:rgba(74,222,128,.12)}
+    .qr-box .label{position:absolute;top:-18px;left:0;font-size:12px;font-weight:700}
+    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .pill{display:flex;align-items:center;gap:8px;background:#334155;border-radius:999px;padding:8px 12px;font-size:14px}
+    input[type="checkbox"]{transform:translateY(1px)}
+    .box-info{margin-top:10px;padding:10px;background:#334155;border-radius:8px;font-size:14px}
+    .small{font-size:12px;color:#cbd5e1}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+
+    /* Global drop overlay */
+    .drop-overlay{position:fixed;inset:0;background:rgba(15,23,42,.75);border:3px dashed #93c5fd;display:none;place-items:center;z-index:9999;color:#e5e7eb;text-align:center;backdrop-filter:blur(2px)}
+    .drop-overlay.active{display:grid}
+    .drop-overlay .inner{padding:24px 28px;border-radius:12px;background:rgba(30,41,59,.9);border:1px solid #93c5fd;font-size:18px;line-height:1.4}
+    .upload-label.drag,#stage.drag{outline:3px dashed #93c5fd;outline-offset:4px;background:#3b4759}
+  </style>
+</head>
+<body>
+  <!-- Full-page drop overlay -->
+  <div id="dropOverlay" class="drop-overlay">
+    <div class="inner">
+      <div style="font-size:32px;margin-bottom:8px;">⬇️ Drop files to load</div>
+      <div>Image files set the template • CSV files populate data</div>
+    </div>
+  </div>
+
+  <div class="container">
+    <h1>QR Code PDF Generator</h1>
+
+    <div class="grid">
+      <!-- Left controls -->
+      <div class="space-y-6">
+        <div class="panel">
+          <h2>1) Upload CSV (Building, Floor, Space, URI)</h2>
+          <label class="upload-label" id="csvDrop">
+            📤 Choose CSV or drag & drop
+            <input type="file" id="csvFile" accept=".csv"/>
+          </label>
+          <div id="csvStatus" class="success-text"></div>
+        </div>
+
+        <div class="panel">
+          <h2>2) Upload Template Image</h2>
+          <label class="upload-label" id="imgDrop">
+            📤 Choose Image or drag & drop
+            <input type="file" id="imageFile" accept="image/*"/>
+          </label>
+          <div id="imageStatus" class="success-text"></div>
+        </div>
+
+        <div class="panel">
+          <h2>3) Place QR Codes</h2>
+          <div class="row small" style="margin-bottom:10px;">
+            <div>• Click image to add box • Drag to move • Backspace to delete</div>
+          </div>
+          <div class="row">
+            <div class="pill">
+              <label for="sizeSlider">Size</label>
+              <input type="range" id="sizeSlider" min="40" max="240" value="100"/>
+              <span id="sizeValue" class="mono">100 px</span>
+            </div>
+            <div class="pill">
+              <label><input type="checkbox" id="snapToggle"/> Snap 8px</label>
+            </div>
+            <div class="pill">
+              <label><input type="checkbox" id="showText" checked/> Add label</label>
+            </div>
+            <!-- Field selector + separator -->
+            <div class="pill" id="labelFieldsPill" style="gap:10px; flex-wrap:wrap;">
+              <span class="small">Show:</span>
+              <label class="small"><input type="checkbox" id="showBuilding" checked /> Building</label>
+              <label class="small"><input type="checkbox" id="showFloor" checked /> Floor</label>
+              <label class="small"><input type="checkbox" id="showSpace" checked /> Space</label>
+              <span class="small">Sep:</span>
+              <input id="labelSep" type="text" value=" / " title="Separator" style="width:48px; padding:2px 6px; border-radius:6px; border:1px solid #64748b; background:#334155; color:#e5e7eb;" />
+            </div>
+            <!-- Color picker -->
+            <div class="pill">
+              <label for="textColor">Label Color</label>
+              <input type="color" id="textColor" value="#8c8c8c" title="Choose label color" />
+            </div>
+            <button class="pill" id="clearBtn" type="button">Clear boxes</button>
+          </div>
+        </div>
+
+        <button class="btn" id="generateBtn" disabled>⬇️ Generate PDF</button>
+      </div>
+
+      <!-- Right preview -->
+      <div class="canvas-container">
+        <h2 style="margin-bottom:10px;">Template Editor</h2>
+        <div id="stage" class="empty">Upload a template image to begin</div>
+        <div id="boxInfo" class="box-info"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ---------- State ---------- */
+let csvRows = []; // [{building,floor,space,uri}]
+let templateDataURL = null;
+let imgEl = null;
+
+let boxes = []; // [{xPct, yPct, sizePct}] sizePct is % of image width
+let selectedIdx = null;
+let dragging = false;
+let dragOffset = {x:0,y:0};
+let qrSizePx = 100; // preview slider value
+let labelColor = '#8c8c8c';
+
+/* ---------- Elements ---------- */
+const stage = document.getElementById('stage');
+const csvFile = document.getElementById('csvFile');
+const imageFile = document.getElementById('imageFile');
+const csvStatus = document.getElementById('csvStatus');
+const imageStatus = document.getElementById('imageStatus');
+const sizeSlider = document.getElementById('sizeSlider');
+const sizeValue = document.getElementById('sizeValue');
+const snapToggle = document.getElementById('snapToggle');
+const showText = document.getElementById('showText');
+const clearBtn = document.getElementById('clearBtn');
+const generateBtn = document.getElementById('generateBtn');
+const boxInfo = document.getElementById('boxInfo');
+const csvDrop = document.getElementById('csvDrop');
+const imgDrop  = document.getElementById('imgDrop');
+const dropOverlay = document.getElementById('dropOverlay');
+const showBuildingEl = document.getElementById('showBuilding');
+const showFloorEl    = document.getElementById('showFloor');
+const showSpaceEl    = document.getElementById('showSpace');
+const labelSepEl     = document.getElementById('labelSep');
+const textColorInput = document.getElementById('textColor');
+
+/* ---------- Utils ---------- */
+function toInt(n){ return Math.max(0, Math.floor(Number(n)||0)); }
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+function enableGenerateIfReady(){
+  generateBtn.disabled = !(csvRows.length && templateDataURL && boxes.length);
+}
+function syncLabelFieldsVisibility(){
+  const on = showText.checked;
+  document.getElementById('labelFieldsPill').style.opacity = on ? '1' : '0.45';
+  document.getElementById('labelFieldsPill').style.pointerEvents = on ? 'auto' : 'none';
+}
+syncLabelFieldsVisibility();
+showText.addEventListener('change', syncLabelFieldsVisibility);
+textColorInput.addEventListener('input', (e)=>{ labelColor = e.target.value; });
+
+/* ---------- CSV ---------- */
+csvFile.addEventListener('change', e=>{
+  const f = e.target.files?.[0]; if(f) handleCSV(f);
+});
+function handleCSV(file){
+  Papa.parse(file, {
+    header:false, skipEmptyLines:true,
+    complete: res=>{
+      csvRows = res.data.map(r=>{
+        const [building, floor, space, uri] = r;
+        if(!uri) return null;
+        return {
+          building: String(building??'').trim(),
+          floor:    String(floor??'').trim(),
+          space:    String(space??'').trim(),
+          uri:      String(uri??'').trim()
+        };
+      }).filter(Boolean);
+      csvStatus.textContent = `✓ ${csvRows.length} items loaded`;
+      updateBoxInfo();
+      enableGenerateIfReady();
+    },
+    error: err=> alert('CSV parse error: '+err.message)
+  });
+}
+
+/* ---------- Image ---------- */
+imageFile.addEventListener('change', e=>{
+  const f = e.target.files?.[0]; if(f) handleImage(f);
+});
+function handleImage(file){
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    templateDataURL = fr.result;
+    boxes = [];
+    selectedIdx = null;
+    drawStage();
+    imageStatus.textContent = '✓ Template loaded';
+    updateBoxInfo();
+    enableGenerateIfReady();
+  };
+  fr.readAsDataURL(file);
+}
+
+function drawStage(){
+  stage.innerHTML = '';
+  if(!templateDataURL){
+    stage.className = 'empty';
+    stage.textContent = 'Upload a template image to begin';
+    return;
+  }
+  stage.className = '';
+  imgEl = document.createElement('img');
+  imgEl.src = templateDataURL;
+  imgEl.style.userSelect='none';
+  imgEl.draggable=false;
+  stage.appendChild(imgEl);
+  imgEl.onload = ()=> renderBoxes();
+}
+
+/* ---------- Box rendering & interactions ---------- */
+function renderBoxes(){
+  [...stage.querySelectorAll('.qr-box')].forEach(el=>el.remove());
+  if(!imgEl) return;
+
+  const {width: imgW, height: imgH} = imgEl.getBoundingClientRect();
+
+  boxes.forEach((b, i)=>{
+    const sizePx = Math.round(b.sizePct * imgW);
+    const left   = b.xPct * imgW;
+    const top    = b.yPct * imgH;
+
+    const box = document.createElement('div');
+    box.className = 'qr-box' + (i===selectedIdx ? ' selected' : '');
+    box.style.left = left + 'px';
+    box.style.top  = top  + 'px';
+    box.style.width  = sizePx + 'px';
+    box.style.height = sizePx + 'px';
+    box.dataset.index = i;
+
+    const lbl = document.createElement('div');
+    lbl.className = 'label';
+    lbl.textContent = i+1;
+    box.appendChild(lbl);
+
+    // Select + start drag
+    box.addEventListener('mousedown', (e)=>{
+      e.stopPropagation();
+      selectedIdx = i; dragging = true;
+      const stageRect = stage.getBoundingClientRect();
+      dragOffset = {
+        x: e.clientX - stageRect.left - left,
+        y: e.clientY - stageRect.top  - top
+      };
+      renderBoxes();
+    });
+
+    stage.appendChild(box);
+  });
+  updateBoxInfo();
+}
+
+function updateBoxInfo(){
+  if(!boxes.length || !csvRows.length){
+    boxInfo.textContent = boxes.length ? `${boxes.length} box(es) placed` : '';
+    return;
+  }
+  const pages = Math.ceil(csvRows.length / boxes.length);
+  boxInfo.innerHTML = `<strong>${boxes.length}</strong> QR position${boxes.length>1?'s':''} • Will generate <strong>${pages}</strong> page${pages>1?'s':''}`;
+}
+
+stage.addEventListener('mousedown', (e)=>{
+  if(!imgEl) return;
+  if(e.target !== stage && e.target !== imgEl) return;
+
+  const imgRect = imgEl.getBoundingClientRect();
+  const imgW = imgRect.width || 1;
+  const imgH = imgRect.height || 1;
+
+  const x = e.clientX - imgRect.left;
+  const y = e.clientY - imgRect.top;
+
+  // start centered at cursor
+  let sizePx = qrSizePx;
+  if (snapToggle.checked){ const g=8; sizePx = Math.round(sizePx/g)*g; }
+
+  let left = x - sizePx/2;
+  let top  = y - sizePx/2;
+
+  left = clamp(left, 0, imgW - sizePx);
+  top  = clamp(top,  0, imgH - sizePx);
+
+  const sizePct = sizePx / imgW;
+  boxes.push({ xPct: left/imgW, yPct: top/imgH, sizePct });
+  selectedIdx = boxes.length - 1;
+  renderBoxes();
+  enableGenerateIfReady();
+});
+
+window.addEventListener('mousemove', (e)=>{
+  if(!dragging || selectedIdx==null || !imgEl) return;
+
+  const imgRect = imgEl.getBoundingClientRect();
+  const imgW = imgRect.width || 1;
+  const imgH = imgRect.height || 1;
+
+  const stageRect = stage.getBoundingClientRect();
+  const sizePx = Math.round(boxes[selectedIdx].sizePct * imgW);
+
+  let left = e.clientX - stageRect.left - dragOffset.x;
+  let top  = e.clientY - stageRect.top  - dragOffset.y;
+
+  left = clamp(left, 0, imgW - sizePx);
+  top  = clamp(top,  0, imgH - sizePx);
+
+  if (snapToggle.checked){ const g=8; left = Math.round(left/g)*g; top = Math.round(top/g)*g; }
+
+  boxes[selectedIdx].xPct = left / imgW;
+  boxes[selectedIdx].yPct = top  / imgH;
+  renderBoxes();
+});
+
+window.addEventListener('mouseup', ()=>{ dragging = false; });
+window.addEventListener('keydown', (e)=>{
+  if(e.key === 'Backspace' && selectedIdx!=null){
+    e.preventDefault();
+    boxes.splice(selectedIdx,1);
+    selectedIdx = null;
+    renderBoxes();
+    enableGenerateIfReady();
+  }
+});
+
+sizeSlider.addEventListener('input', (e)=>{
+  qrSizePx = parseInt(e.target.value,10);
+  sizeValue.textContent = qrSizePx + ' px';
+  if(!imgEl) return;
+  const imgW = imgEl.getBoundingClientRect().width || 1;
+  boxes.forEach(b=> b.sizePct = qrSizePx / imgW);
+  renderBoxes();
+});
+
+/* ---------- Clear ---------- */
+clearBtn.addEventListener('click', ()=>{
+  boxes = [];
+  selectedIdx = null;
+  renderBoxes();
+  enableGenerateIfReady();
+});
+
+/* ---------- Build label from selected fields ---------- */
+function buildLabel(item){
+  const parts = [];
+  if (showBuildingEl.checked && item.building) parts.push(item.building);
+  if (showFloorEl.checked    && item.floor)    parts.push(item.floor);
+  if (showSpaceEl.checked    && item.space)    parts.push(item.space);
+  if (parts.length === 0) return '';
+  const sep = (labelSepEl.value ?? ' / ');
+  return parts.join(sep);
+}
+
+/* ---------- True QR: fills box, no quiet zone ---------- */
+function makeQRCanvas(text, targetPx){
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount();
+
+  // Draw base at module resolution (n x n)
+  const c0 = document.createElement('canvas');
+  c0.width = n; c0.height = n;
+  const g = c0.getContext('2d', {alpha:false});
+  g.fillStyle = '#FFFFFF'; g.fillRect(0,0,n,n);
+  g.fillStyle = '#000000';
+  for(let r=0;r<n;r++){
+    for(let c=0;c<n;c++){
+      if(qr.isDark(r,c)) g.fillRect(c, r, 1, 1);
+    }
+  }
+
+  // Scale to target with no smoothing so edges stay sharp
+  const c = document.createElement('canvas');
+  c.width = targetPx; c.height = targetPx;
+  const ctx = c.getContext('2d', {alpha:false});
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(c0, 0, 0, targetPx, targetPx);
+  return c;
+}
+
+/* ---------- Label fitting helpers ---------- */
+// Binary-search a font size that makes `text` ≤ targetWidth
+function fitFontSizeToWidth(pdf, text, maxPx, {min=6, max=32, step=0.25} = {}){
+  let lo = min, hi = max;
+  pdf.setFontSize(hi);
+  if (pdf.getTextWidth(text) <= maxPx) return hi;
+
+  for (let i=0; i<40 && (hi - lo) > step; i++){
+    const mid = (lo + hi) / 2;
+    pdf.setFontSize(mid);
+    const w = pdf.getTextWidth(text);
+    if (w <= maxPx) lo = mid; else hi = mid;
+  }
+  pdf.setFontSize(lo);
+  return lo;
+}
+
+// Greedy wrap into up to 2 lines that each fit ≤ maxPx.
+// Returns {lines, fontSize}
+function wrapIntoTwoLines(pdf, text, maxPx, {min=6, max=32} = {}){
+  // try single-line first
+  const size1 = fitFontSizeToWidth(pdf, text, maxPx, {min, max});
+  if (pdf.getTextWidth(text) <= maxPx) {
+    return { lines: [text], fontSize: size1 };
+  }
+
+  // two-line fallback: split on separators (prefer " / ", then spaces)
+  const tokens = text.split(/\s*\/\s*|\s+/).filter(Boolean);
+  if (tokens.length < 2){
+    pdf.setFontSize(min);
+    return { lines: [text], fontSize: min };
+  }
+
+  let best = null;
+  for (let cut = 1; cut < tokens.length; cut++){
+    const line1 = tokens.slice(0, cut).join(' ');
+    const line2 = tokens.slice(cut).join(' ');
+
+    const sizeLine1 = fitFontSizeToWidth(pdf, line1, maxPx, {min, max});
+    const sizeLine2 = fitFontSizeToWidth(pdf, line2, maxPx, {min, max});
+    const chosenSize = Math.min(sizeLine1, sizeLine2);
+
+    pdf.setFontSize(chosenSize);
+    const fits = (pdf.getTextWidth(line1) <= maxPx) && (pdf.getTextWidth(line2) <= maxPx);
+
+    if (fits){
+      if (!best || chosenSize > best.fontSize){
+        best = { lines: [line1, line2], fontSize: chosenSize };
+      }
+    }
+  }
+
+  if (best) {
+    pdf.setFontSize(best.fontSize);
+    return { lines: best.lines, fontSize: best.fontSize };
+  }
+
+  pdf.setFontSize(min);
+  return { lines: [text], fontSize: min };
+}
+
+/* ---------- PDF Generation ---------- */
+generateBtn.addEventListener('click', async ()=>{
+  if(!(csvRows.length && templateDataURL && boxes.length)) return;
+
+  generateBtn.disabled = true;
+  generateBtn.textContent = '⏳ Generating...';
+
+  try{
+    const jsPDF = window.jspdf?.jsPDF || window.jsPDF;
+
+    // Load template at natural size
+    const img = await new Promise((resolve,reject)=>{
+      const im = new Image();
+      im.onload = ()=>resolve(im);
+      im.onerror = reject;
+      im.src = templateDataURL;
+    });
+    const imgW = img.naturalWidth  || img.width;
+    const imgH = img.naturalHeight || img.height;
+
+    const pdf = new jsPDF({
+      orientation: imgW > imgH ? 'landscape' : 'portrait',
+      unit: 'px',
+      format: [imgW, imgH],
+      compress: true
+    });
+
+    // Pre-render a JPEG background (saves memory)
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = imgW; tempCanvas.height = imgH;
+    const tctx = tempCanvas.getContext('2d');
+    tctx.drawImage(img,0,0,imgW,imgH);
+    const pageJPEG = tempCanvas.toDataURL('image/jpeg', 0.9);
+
+    let i = 0;
+    let first = true;
+    while(i < csvRows.length){
+      if(!first) pdf.addPage([imgW,imgH]); else first=false;
+
+      pdf.addImage(pageJPEG, 'JPEG', 0, 0, imgW, imgH);
+
+      const onThisPage = Math.min(boxes.length, csvRows.length - i);
+      for(let k=0;k<onThisPage;k++){
+        const item = csvRows[i+k];
+        const b = boxes[k];
+
+        // Convert % to natural pixels
+        let x = toInt(b.xPct * imgW);
+        let y = toInt(b.yPct * imgH);
+        let size = toInt(b.sizePct * imgW);
+
+        // Clamp so we never overflow the page
+        size = Math.max(1, Math.min(size, imgW - x, imgH - y));
+
+        // Draw QR
+        const qrCanvas = makeQRCanvas(item.uri, size);
+        const qrData = qrCanvas.toDataURL('image/png');
+        if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(size)||x<0||y<0||size<=0){
+          throw new Error(`Bad addImage coords: x=${x}, y=${y}, size=${size}`);
+        }
+        pdf.addImage(qrData, 'PNG', x, y, size, size);
+
+        // ---- Auto-fit label (color + width match QR) ----
+        if (showText.checked){
+          const label = buildLabel(item);
+          if (label) {
+            const targetW = size;
+            const maxFont = Math.floor(size * 0.18);
+            const minFont = 6;
+
+            pdf.setFont('helvetica','bold');
+
+            // Apply chosen color
+            if (typeof labelColor === 'string' && labelColor.startsWith('#')) {
+              const hex = labelColor.slice(1);
+              const r = parseInt(hex.substring(0,2),16);
+              const g = parseInt(hex.substring(2,4),16);
+              const bcol = parseInt(hex.substring(4,6),16);
+              pdf.setTextColor(r,g,bcol);
+            } else {
+              pdf.setTextColor(140,140,140);
+            }
+
+            const {lines, fontSize} = wrapIntoTwoLines(pdf, label, targetW, {min: minFont, max: maxFont});
+            pdf.setFontSize(fontSize);
+
+            const lineH = Math.max(10, Math.floor(fontSize * 1.2));
+            const totalH = lineH * lines.length;
+            const baseY = Math.min(imgH - totalH - 2, y + size + 6); // keep on page
+
+            let yCursor = baseY;
+            for (const ln of lines){
+              const w = pdf.getTextWidth(ln);                // ≤ targetW by construction
+              const xText = x + Math.round((targetW - w) / 2); // center under QR
+              pdf.text(ln, xText, yCursor + lineH * 0.8);
+              yCursor += lineH;
+            }
+          }
+        }
+      }
+      i += onThisPage;
+    }
+
+    pdf.save('qr-codes.pdf');
+  }catch(err){
+    console.error(err);
+    alert('Error generating PDF: ' + (err?.message || err));
+  }finally{
+    generateBtn.disabled = false;
+    generateBtn.textContent = '⬇️ Generate PDF';
+  }
+});
+
+/* ---------- Drag & Drop: Full-page + Zones + Stage ---------- */
+let dragDepth = 0; // avoid flicker on nested dragenter/leave
+
+['dragenter','dragover','dragleave','drop'].forEach(evt=>{
+  window.addEventListener(evt, e=>{
+    if(evt !== 'dragleave'){ e.preventDefault(); }
+    e.stopPropagation();
+
+    if(evt === 'dragenter'){
+      dragDepth++;
+      dropOverlay.classList.add('active');
+    }
+    if(evt === 'dragleave'){
+      dragDepth = Math.max(0, dragDepth-1);
+      if(dragDepth === 0) dropOverlay.classList.remove('active');
+    }
+    if(evt === 'drop'){
+      dragDepth = 0;
+      dropOverlay.classList.remove('active');
+      handleFiles(e.dataTransfer.files);
+    }
+  }, true);
+});
+
+// Highlight zones and route file types
+[csvDrop, imgDrop, stage].forEach(zone=>{
+  zone.addEventListener('dragenter', e=>{ e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragover',  e=>{ e.preventDefault(); });
+  zone.addEventListener('dragleave', ()=> zone.classList.remove('drag'));
+  zone.addEventListener('drop', e=>{
+    e.preventDefault(); zone.classList.remove('drag');
+    const files = e.dataTransfer.files;
+    if(zone === csvDrop){
+      const csv = Array.from(files).find(isCSVFile);
+      if(csv) handleCSV(csv); else alert('Please drop a .csv file here.');
+    } else if(zone === imgDrop || zone === stage){
+      const img = Array.from(files).find(isImageFile);
+      if(img) handleImage(img); else alert('Please drop an image file here.');
+    }
+  });
+});
+
+/* ---------- DnD helpers & multi-file handling ---------- */
+function isCSVFile(f){ return /\.csv$/i.test(f.name) || f.type === 'text/csv'; }
+function isImageFile(f){ return f.type.startsWith('image/'); }
+
+async function handleFiles(fileList){
+  if(!fileList || !fileList.length) return;
+  const files = Array.from(fileList);
+
+  const imgs  = files.filter(isImageFile);
+  const csvs  = files.filter(isCSVFile);
+
+  // Dedup by filename
+  const uniqueByName = (arr)=>Object.values(arr.reduce((m,f)=> (m[f.name]=f, m), {}));
+  for(const f of uniqueByName(imgs)) await handleImage(f);
+  for(const f of uniqueByName(csvs)) await handleCSV(f);
+
+  // Fallback: single text file that might contain CSV
+  if(!imgs.length && !csvs.length && files.length === 1){
+    const f = files[0];
+    if (/\.txt$/i.test(f.name) || f.type.startsWith('text/')){
+      const text = await f.text();
+      tryParseCSVText(text);
+    }
+  }
+}
+
+function tryParseCSVText(text){
+  if(!text || !text.trim()) return;
+  Papa.parse(text, {
+    header:false, skipEmptyLines:true,
+    complete: res=>{
+      if(!res.data?.length || res.data[0].length < 4){
+        alert('Pasted/dropped text does not look like a 4-column CSV.');
+        return;
+      }
+      csvRows = res.data.map(r=>{
+        const [building, floor, space, uri] = r;
+        if(!uri) return null;
+        return {
+          building: String(building??'').trim(),
+          floor:    String(floor??'').trim(),
+          space:    String(space??'').trim(),
+          uri:      String(uri??'').trim()
+        };
+      }).filter(Boolean);
+      csvStatus.textContent = `✓ ${csvRows.length} items loaded`;
+      updateBoxInfo();
+      enableGenerateIfReady();
+    }
+  });
+}
+
+/* ---------- Clipboard paste: image or CSV text ---------- */
+window.addEventListener('paste', async (e)=>{
+  // Image in clipboard?
+  if(e.clipboardData && e.clipboardData.files && e.clipboardData.files.length){
+    const img = Array.from(e.clipboardData.files).find(isImageFile);
+    if(img){
+      e.preventDefault();
+      await handleImage(img);
+      return;
+    }
+  }
+  // Otherwise try text as CSV
+  const text = e.clipboardData?.getData('text/plain');
+  if(text && text.trim()){
+    e.preventDefault();
+    tryParseCSVText(text);
+  }
+});
+</script>
+</body>
+</html>
