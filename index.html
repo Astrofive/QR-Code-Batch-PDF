@@ -19,8 +19,9 @@
   .space-y-6{display:flex;flex-direction:column;gap:18px}
   .panel{background:#475569;border-radius:10px;padding:18px}
   .panel h2{font-size:18px;margin-bottom:10px}
-  .upload-label{display:block;border:1.5px dashed #93c5fd;background:#334155;border-radius:12px;padding:14px;text-align:center;cursor:pointer}
+  .upload-label{display:block;border:1.5px dashed #93c5fd;background:#334155;border-radius:12px;padding:14px;text-align:center;cursor:pointer;transition:background .2s,border .2s}
   .upload-label input{display:none}
+  .upload-label.drag{outline:3px dashed #93c5fd;outline-offset:4px;background:#3b4759}
   .success-text{margin-top:8px;font-size:14px;color:#86efac}
   .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
   .pill{display:flex;align-items:center;gap:8px;background:#334155;border-radius:999px;padding:8px 12px;font-size:14px}
@@ -35,23 +36,12 @@
   .qr-box{position:absolute;border:2px solid #60a5fa;background:rgba(96,165,250,.12);cursor:move;transition:.05s}
   .qr-box.selected{border-color:#4ade80;background:rgba(74,222,128,.12)}
   .qr-box .label{position:absolute;top:-18px;left:0;font-size:12px;font-weight:700}
-  .label-area{position:absolute;pointer-events:none} /* no dashed preview box */
+  /* label preview is draggable */
+  .label-area{position:absolute;pointer-events:auto;cursor:move}
   .box-info{margin-top:10px;padding:10px;background:#334155;border-radius:8px;font-size:14px}
-  /* DnD overlay & highlight */
-  .drop-overlay{position:fixed;inset:0;pointer-events:none;background:rgba(15,23,42,.55);display:none;place-items:center;z-index:999;color:#e5e7eb;backdrop-filter:blur(2px)}
-  .drop-overlay.active{display:grid}
-  .drop-overlay .inner{padding:24px 28px;border-radius:12px;background:rgba(30,41,59,.9);border:1px solid #93c5fd;font-size:18px}
-  .upload-label.drag,#stage.drag{outline:3px dashed #93c5fd;outline-offset:4px;background:#3b4759}
 </style>
 </head>
 <body>
-  <!-- Full-window drop overlay -->
-  <div id="dropOverlay" class="drop-overlay">
-    <div class="inner">
-      <div style="font-size:22px;font-weight:800;letter-spacing:-.02em;margin-bottom:6px">Drop files to load</div>
-      <div class="small">Image files set the template • CSV files populate data</div>
-    </div>
-  </div>
 
   <div class="container">
     <h1>QR Code PDF Generator</h1>
@@ -132,13 +122,15 @@
 let csvRows = [];                  // [{building,floor,space,uri}]
 let templateDataURL = null;
 let imgEl = null;
-let boxes = [];                    // [{xPct,yPct,sizePct}]
+let boxes = [];                    // [{xPct,yPct,sizePct,labelXPct?,labelYPct?}]
 let selectedIdx = null;
 let dragging = false;
+let dragMode = null;               // 'qr' | 'label' | null
 let dragOffset = {x:0,y:0};
 let labelColor = '#8c8c8c';
 let qrSizePx = 100;                // absolute pixels
 let labelFontPx = 18;              // absolute pixels
+let handlersBound = false;         // prevent duplicate global handlers
 
 /* ---------- DOM ---------- */
 const stage        = document.getElementById('stage');
@@ -146,7 +138,6 @@ const csvFile      = document.getElementById('csvFile');
 const imageFile    = document.getElementById('imageFile');
 const csvDrop      = document.getElementById('csvDrop');
 const imgDrop      = document.getElementById('imgDrop');
-const dropOverlay  = document.getElementById('dropOverlay');
 
 const csvStatus    = document.getElementById('csvStatus');
 const imageStatus  = document.getElementById('imageStatus');
@@ -184,7 +175,7 @@ function syncLabelFieldsVisibility(){
   pill.style.opacity = on ? '1' : '0.5';
   pill.style.pointerEvents = on ? 'auto' : 'none';
 }
-showText.addEventListener('change', syncLabelFieldsVisibility);
+showText.addEventListener('change', ()=>{ syncLabelFieldsVisibility(); renderBoxes(); });
 textColorInput.addEventListener('input', e=>{ labelColor = e.target.value; renderBoxes(); });
 syncLabelFieldsVisibility();
 
@@ -239,6 +230,15 @@ function drawStage(){
   imgEl.style.userSelect='none';
   imgEl.draggable=false;
   stage.appendChild(imgEl);
+
+  // Attach ONLY once per template image
+  imgEl.addEventListener('mousedown', onStageMouseDown);
+
+  if (!handlersBound){
+    window.addEventListener('mouseup', ()=>{ dragging=false; dragMode=null; });
+    handlersBound = true;
+  }
+
   imgEl.onload = ()=>{ renderBoxes(); };
 }
 
@@ -281,7 +281,21 @@ function renderBoxes(){
     lbl.textContent = i+1;
     box.appendChild(lbl);
 
-    // Label preview (text only)
+    // Drag QR
+    box.addEventListener('mousedown', (e)=>{
+      e.preventDefault();
+      selectedIdx = i;
+      dragging = true;
+      dragMode = 'qr';
+      const imgRect = imgEl.getBoundingClientRect();
+      dragOffset.x = e.clientX - imgRect.left - left;
+      dragOffset.y = e.clientY - imgRect.top  - top;
+      renderBoxes();
+    });
+
+    stage.appendChild(box);
+
+    // Label preview (text only, draggable)
     if (showText.checked){
       const dataItem = csvRows[i] || null;
       const labelText = dataItem ? buildLabel(dataItem) : 'Label';
@@ -289,7 +303,7 @@ function renderBoxes(){
 
       const labelBox = document.createElement('div');
       labelBox.className = 'label-area';
-      labelBox.style.left = left + 'px';
+      labelBox.dataset.index = i;
       labelBox.style.width = sizePx + 'px';
 
       const textEl = document.createElement('div');
@@ -306,34 +320,45 @@ function renderBoxes(){
       labelBox.appendChild(textEl);
       stage.appendChild(labelBox);
 
-      // measure & place below QR
+      // measure height (~up to 2 lines)
       const contentH = Math.min(Math.round(fontPx * 2 * 1.2), textEl.scrollHeight || Math.round(fontPx*1.2));
-      const newTop = Math.min(imgH - contentH - 2, top + sizePx + 6);
-      labelBox.style.top = newTop + 'px';
+
+      // Position from saved pct or default under QR
+      const hasSaved = (typeof b.labelXPct === 'number') && (typeof b.labelYPct === 'number');
+      let leftLabel = hasSaved ? b.labelXPct * imgW : left;
+      let topLabel  = hasSaved ? b.labelYPct  * imgH : (top + sizePx + 6);
+
+      // Clamp
+      leftLabel = clamp(leftLabel, 0, imgW - sizePx);
+      topLabel  = clamp(topLabel,  0, imgH - contentH - 2);
+
+      // Persist pct
+      b.labelXPct = leftLabel / imgW;
+      b.labelYPct = topLabel  / imgH;
+
+      // Apply
+      labelBox.style.left   = Math.round(leftLabel) + 'px';
+      labelBox.style.top    = Math.round(topLabel)  + 'px';
       labelBox.style.height = contentH + 'px';
+
+      // Drag label
+      labelBox.addEventListener('mousedown', (e)=>{
+        e.preventDefault();
+        selectedIdx = i;
+        dragging = true;
+        dragMode = 'label';
+        const imgRect = imgEl.getBoundingClientRect();
+        dragOffset.x = e.clientX - imgRect.left - leftLabel;
+        dragOffset.y = e.clientY - imgRect.top  - topLabel;
+        renderBoxes();
+      });
     }
-
-    // Select + drag
-    box.addEventListener('mousedown', (e)=>{
-      e.preventDefault();
-      selectedIdx = i;
-      dragging = true;
-      const rect = stage.getBoundingClientRect();
-      dragOffset.x = e.clientX - rect.left - left;
-      dragOffset.y = e.clientY - rect.top  - top;
-      renderBoxes();
-    });
-
-    stage.appendChild(box);
   });
-
-  // Add new box on image click
-  imgEl.addEventListener('mousedown', onStageMouseDown);
-  window.addEventListener('mouseup', ()=> dragging=false);
 }
+
 function onStageMouseDown(e){
   if(!imgEl) return;
-  if (e.target && e.target.closest('.qr-box')) return; // ignore dragging
+  if (e.target && (e.target.closest('.qr-box') || e.target.closest('.label-area'))) return; // ignore when dragging existing
 
   const rect = imgEl.getBoundingClientRect();
   const imgW = rect.width || 1;
@@ -352,7 +377,18 @@ function onStageMouseDown(e){
   top  = clamp(top,  0, imgH - sizePx);
 
   const sizePct = sizePx / imgW;
-  boxes.push({ xPct: left/imgW, yPct: top/imgH, sizePct });
+  // Seed label position just under QR (approx 2 lines)
+  const approxH = Math.round((labelFontPx||18) * 2 * 1.2);
+  const labelLeftPx = left;
+  const labelTopPx  = Math.min(imgH - approxH - 2, top + sizePx + 6);
+
+  boxes.push({
+    xPct: left/imgW,
+    yPct: top/imgH,
+    sizePct,
+    labelXPct: labelLeftPx / imgW,
+    labelYPct: labelTopPx  / imgH
+  });
   selectedIdx = boxes.length - 1;
   renderBoxes();
   enableGenerateIfReady();
@@ -372,17 +408,36 @@ window.addEventListener('mousemove', (e)=>{
     top  = Math.round(top/8)*8;
   }
 
-  const sizePx = Math.round(boxes[selectedIdx].sizePct * imgW);
-  left = clamp(left, 0, imgW - sizePx);
-  top  = clamp(top,  0, imgH - sizePx);
+  if (dragMode === 'qr'){
+    const sizePx = Math.round(boxes[selectedIdx].sizePct * imgW);
+    left = clamp(left, 0, imgW - sizePx);
+    top  = clamp(top,  0, imgH - sizePx);
+    boxes[selectedIdx].xPct = left / imgW;
+    boxes[selectedIdx].yPct = top  / imgH;
+  } else if (dragMode === 'label'){
+    const sizePx = Math.round(boxes[selectedIdx].sizePct * imgW);
+    left = clamp(left, 0, imgW - sizePx);
+    top  = clamp(top,  0, imgH - 4); // vertical soft clamp; refined in renderBoxes()
+    boxes[selectedIdx].labelXPct = left / imgW;
+    boxes[selectedIdx].labelYPct = top  / imgH;
+  }
 
-  boxes[selectedIdx].xPct = left / imgW;
-  boxes[selectedIdx].yPct = top  / imgH;
   renderBoxes();
 });
 
 window.addEventListener('keydown', (e)=>{
-  if(e.key === 'Backspace' && selectedIdx!=null){
+  if (e.key !== 'Backspace') return;
+
+  const t = e.target;
+  const isTyping = t && (
+    t.tagName === 'INPUT' ||
+    t.tagName === 'TEXTAREA' ||
+    t.isContentEditable
+  );
+  if (isTyping) return;
+
+  if (selectedIdx != null){
+    e.preventDefault(); // avoid browser back
     boxes.splice(selectedIdx,1);
     selectedIdx = null;
     renderBoxes();
@@ -390,6 +445,7 @@ window.addEventListener('keydown', (e)=>{
     enableGenerateIfReady();
   }
 });
+
 clearBtn.addEventListener('click', ()=>{
   boxes = [];
   selectedIdx = null;
@@ -398,50 +454,44 @@ clearBtn.addEventListener('click', ()=>{
   enableGenerateIfReady();
 });
 
-/* ---------- DnD: zones + global overlay ---------- */
+/* ---------- DnD: ONLY on CSV & Image tiles ---------- */
 function isImageFile(f){ return f && /^image\//.test(f.type); }
 function isCSVFile(f){ return /\.csv$/i.test(f.name) || f.type === 'text/csv'; }
 
-[csvDrop, imgDrop, stage].forEach(zone=>{
-  zone.addEventListener('dragenter', e=>{ e.preventDefault(); dropOverlay.classList.add('active'); zone.classList.add('drag'); });
-  zone.addEventListener('dragover',  e=>{ e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='copy'; });
-  zone.addEventListener('dragleave', e=>{ zone.classList.remove('drag'); });
+[csvDrop, imgDrop].forEach(zone=>{
+  zone.addEventListener('dragenter', e=>{
+    e.preventDefault();
+    zone.classList.add('drag');
+  });
+  zone.addEventListener('dragover', e=>{
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  zone.addEventListener('dragleave', e=>{
+    zone.classList.remove('drag');
+  });
   zone.addEventListener('drop', e=>{
-    e.preventDefault(); dropOverlay.classList.remove('active'); zone.classList.remove('drag');
-    const files = Array.from(e.dataTransfer.files||[]);
-    if(zone === csvDrop){
+    e.preventDefault();
+    zone.classList.remove('drag');
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length) return;
+
+    if (zone === csvDrop) {
       const csv = files.find(isCSVFile);
-      if(csv) Papa.parse(csv,{header:false,skipEmptyLines:true,complete:res=>parseRows(res.data)});
-      else alert('Please drop a .csv file here.');
-    }else{
+      if (csv) {
+        Papa.parse(csv, { header:false, skipEmptyLines:true, complete: res => parseRows(res.data) });
+      } else {
+        alert('Please drop a .csv file on the CSV area.');
+      }
+    } else { // imgDrop
       const img = files.find(isImageFile);
-      if(img) handleImage(img);
-      else if(zone===stage) alert('Please drop an image file here.');
+      if (img) {
+        handleImage(img);
+      } else {
+        alert('Please drop an image file on the image area.');
+      }
     }
   });
-});
-window.addEventListener('dragenter', e=>{
-  if (e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files')){
-    dropOverlay.classList.add('active');
-  }
-});
-window.addEventListener('dragleave', e=>{
-  if (!e.relatedTarget || e.clientX<=0 || e.clientY<=0) dropOverlay.classList.remove('active');
-});
-document.addEventListener('dragover', e=>{ e.preventDefault(); });
-window.addEventListener('drop', e=>{
-  e.preventDefault();
-  dropOverlay.classList.remove('active');
-  const files = Array.from(e.dataTransfer?.files||[]);
-  if(!files.length) return;
-  // Prefer CSV if present; otherwise take first image
-  const csv = files.find(f=>/\.csv$/i.test(f.name) || f.type==='text/csv');
-  const img = files.find(f=>/^image\//.test(f.type));
-  if (csv){
-    Papa.parse(csv,{header:false,skipEmptyLines:true,complete:res=>parseRows(res.data)});
-  } else if (img){
-    handleImage(img);
-  }
 });
 
 /* ---------- Label text ---------- */
@@ -476,7 +526,7 @@ function makeQRCanvas(text, targetPx){
   return c;
 }
 
-/* ---------- PDF ---------- */
+/* ---------- PDF helpers ---------- */
 function wrapTwoLinesFixed(pdf, text, maxPx, fontPx){
   pdf.setFontSize(fontPx);
   const lineH = Math.max(10, Math.floor(fontPx * 1.2));
@@ -496,6 +546,7 @@ function wrapTwoLinesFixed(pdf, text, maxPx, fontPx){
   return {lines:[text], lineH};
 }
 
+/* ---------- PDF generation ---------- */
 generateBtn.addEventListener('click', async ()=>{
   if(!(csvRows.length && templateDataURL && boxes.length)) return;
 
@@ -510,11 +561,9 @@ generateBtn.addEventListener('click', async ()=>{
     const imgW = img.naturalWidth  || img.width;
     const imgH = img.naturalHeight || img.height;
 
-    
-
     // Scale CSS preview -> PDF pixels so label size matches the on-screen preview
     const displayW = (imgEl && imgEl.getBoundingClientRect ? (imgEl.getBoundingClientRect().width || imgW) : imgW) || imgW;
-    const scalePx  = imgW / (displayW || imgW); // e.g., if preview shows the image at half size, scalePx=2
+    const scalePx  = imgW / (displayW || imgW);
     const pdf = new jsPDF({orientation: imgW>imgH?'landscape':'portrait', unit:'px', format:[imgW,imgH], compress:true, putOnlyUsedFonts:true});
 
     // Background image once per page
@@ -554,13 +603,21 @@ generateBtn.addEventListener('click', async ()=>{
 
             const {lines, lineH} = wrapTwoLinesFixed(pdf, label, size, fontPx);
             const totalH = lineH * lines.length;
-            const gap = Math.round(6 * scalePx);
-            const marginBottom = Math.round(2 * scalePx);
-            const baseY  = Math.min(imgH - totalH - marginBottom, y + size + gap);
-            let yCursor = baseY;
+            const margin = Math.round(2 * scalePx);
+
+            // Use saved label position (pct), fallback to under-QR if undefined
+            let labelLeftPx = Math.round((typeof b.labelXPct === 'number' ? b.labelXPct : b.xPct) * imgW);
+            let labelTopPx  = Math.round((typeof b.labelYPct === 'number' ? b.labelYPct  : (b.yPct + b.sizePct)) * imgH);
+
+            // Clamp to page
+            labelLeftPx = clamp(labelLeftPx, 0, imgW - size);
+            labelTopPx  = clamp(labelTopPx,  0, imgH - totalH - margin);
+
+            // Draw centered within label box width (same as QR size)
+            let yCursor = labelTopPx;
             for(const ln of lines){
               const w = pdf.getTextWidth(ln);
-              const xText = x + Math.round((size - w)/2);
+              const xText = labelLeftPx + Math.round((size - w)/2);
               pdf.text(ln, xText, yCursor + lineH*0.8);
               yCursor += lineH;
             }
